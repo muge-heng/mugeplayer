@@ -1,5 +1,8 @@
 import { LyricLine } from './types';
 
+// Declare jsmediatags for TypeScript (loaded via CDN)
+declare const jsmediatags: any;
+
 export const formatTime = (seconds: number): string => {
   if (isNaN(seconds)) return '0:00';
   const mins = Math.floor(seconds / 60);
@@ -34,3 +37,40 @@ export const isLrcFormat = (text: string): boolean => {
 };
 
 export const generateId = () => Math.random().toString(36).substr(2, 9);
+
+export const readMetadata = (file: File): Promise<{ title?: string; artist?: string; album?: string; coverUrl?: string }> => {
+  return new Promise((resolve) => {
+    if (typeof jsmediatags === 'undefined') {
+      console.warn("jsmediatags library not loaded");
+      resolve({});
+      return;
+    }
+
+    jsmediatags.read(file, {
+      onSuccess: (tag: any) => {
+        const { title, artist, album, picture } = tag.tags;
+        let coverUrl: string | undefined = undefined;
+
+        if (picture) {
+          const { data, format } = picture;
+          let base64String = "";
+          for (let i = 0; i < data.length; i++) {
+            base64String += String.fromCharCode(data[i]);
+          }
+          coverUrl = `data:${format};base64,${window.btoa(base64String)}`;
+        }
+
+        resolve({
+          title,
+          artist,
+          album,
+          coverUrl
+        });
+      },
+      onError: (error: any) => {
+        console.log('Error reading tags:', error.type, error.info);
+        resolve({});
+      }
+    });
+  });
+};

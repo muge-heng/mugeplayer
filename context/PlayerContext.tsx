@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useRef, useEffect } from 'react';
-import { Song, PlayerState } from '../types';
+import { Song, PlayerState, VisualMode, NavView } from '../types';
+import { readMetadata } from '../utils';
 
 interface PlayerContextType extends PlayerState {
   audioRef: React.RefObject<HTMLAudioElement>;
@@ -10,11 +11,15 @@ interface PlayerContextType extends PlayerState {
   prev: () => void;
   seek: (time: number) => void;
   setVolume: (val: number) => void;
-  addToQueue: (files: FileList | null) => void;
+  addToQueue: (files: FileList | null) => Promise<void>;
+  uploadLyrics: (file: File) => Promise<void>;
   toggleLike: (id: string) => void;
   toggleShuffle: () => void;
   toggleRepeat: () => void;
   setView: (view: 'library' | 'lyrics') => void;
+  setNavView: (view: NavView) => void;
+  setVisualMode: (mode: VisualMode) => void;
+  setSearchQuery: (query: string) => void;
   updateSongMetadata: (id: string, updates: Partial<Song>) => void;
 }
 
@@ -31,7 +36,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     history: [],
     shuffle: false,
     repeat: 'off',
-    view: 'library'
+    view: 'library',
+    navView: 'library',
+    visualMode: 'square',
+    searchQuery: '',
   });
 
   // Handle Audio Events
@@ -50,7 +58,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       audio.removeEventListener('ended', handleEnded);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.queue, state.repeat, state.shuffle]); // Re-bind if playlist logic changes
+  }, [state.queue, state.repeat, state.shuffle]); 
 
   // Play a specific song
   const play = (song: Song) => {
@@ -107,7 +115,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const prev = () => {
     if (!state.currentSong) return;
-    // If more than 3 seconds in, restart song
     if (state.currentTime > 3 && audioRef.current) {
         audioRef.current.currentTime = 0;
         return;
@@ -137,42 +144,81 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const addToQueue = async (files: FileList | null) => {
     if (!files) return;
-    const newSongs: Song[] = [];
     
+    const audioFiles: File[] = [];
+    const lrcFiles: File[] = [];
+
+    // Separate files
     for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (file.type.startsWith('audio/')) {
+        const file = files[i];
+        if (file.type.startsWith('audio/') || file.name.endsWith('.flac')) {
+            audioFiles.push(file);
+        } else if (file.name.endsWith('.lrc')) {
+            lrcFiles.push(file);
+        }
+    }
+
+    const newSongs: Song[] = [];
+
+    for (const file of audioFiles) {
         const url = URL.createObjectURL(file);
-        // Basic parsing from filename "Artist - Title.mp3"
-        let artist = 'Unknown Artist';
-        let title = file.name.replace(/\.[^/.]+$/, "");
-        
-        if (title.includes('-')) {
+        const metadata = await readMetadata(file);
+
+        let artist = metadata.artist || 'Unknown Artist';
+        let title = metadata.title || file.name.replace(/\.[^/.]+$/, "");
+        if (!metadata.title && title.includes('-')) {
             const parts = title.split('-');
             artist = parts[0].trim();
             title = parts.slice(1).join('-').trim();
+        }
+
+        // Auto-match LRC
+        let lyrics = undefined;
+        // 1. Check in newly uploaded LRCs
+        const fileNameBase = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+        const matchedLrcFile = lrcFiles.find(l => {
+            const lrcNameBase = l.name.substring(0, l.name.lastIndexOf('.')) || l.name;
+            return lrcNameBase === fileNameBase;
+        });
+
+        if (matchedLrcFile) {
+            lyrics = await matchedLrcFile.text();
         }
 
         newSongs.push({
           id: Math.random().toString(36).substr(2, 9),
           title,
           artist,
-          album: 'Local Import',
-          duration: 0, // Duration updates on load metadata
+          album: metadata.album || 'Local Import',
+          duration: 0, 
           fileUrl: url,
+          coverUrl: metadata.coverUrl,
+          lyrics: lyrics
         });
-      }
     }
 
     setState(prev => {
-        const updatedQueue = [...prev.queue, ...newSongs];
-        // If nothing playing, play first imported
+        // Also check if any new LRCs match EXISTING songs in queue that don't have lyrics
+        const updatedQueue = [...prev.queue];
+        // Note: This logic for existing songs would require async operations inside set state which is tricky. 
+        // We'll simplisticly just handle new songs for now, or we would need a separate effect.
+        
+        const finalQueue = [...updatedQueue, ...newSongs];
+        
         if (!prev.currentSong && newSongs.length > 0) {
             setTimeout(() => play(newSongs[0]), 100);
-            return { ...prev, queue: updatedQueue, currentSong: newSongs[0], isPlaying: true };
+            return { ...prev, queue: finalQueue, currentSong: newSongs[0], isPlaying: true };
         }
-        return { ...prev, queue: updatedQueue };
+        return { ...prev, queue: finalQueue };
     });
+  };
+
+  const uploadLyrics = async (file: File) => {
+      if (!state.currentSong) return;
+      if (file.name.endsWith('.lrc') || file.type === 'text/plain') {
+          const text = await file.text();
+          updateSongMetadata(state.currentSong.id, { lyrics: text });
+      }
   };
 
   const toggleLike = (id: string) => {
@@ -211,10 +257,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       seek,
       setVolume,
       addToQueue,
+      uploadLyrics,
       toggleLike,
       toggleShuffle,
       toggleRepeat,
       setView: (view) => setState(s => ({...s, view})),
+      setNavView: (navView) => setState(s => ({...s, navView})),
+      setVisualMode: (visualMode) => setState(s => ({...s, visualMode})),
+      setSearchQuery: (searchQuery) => setState(s => ({...s, searchQuery})),
       updateSongMetadata
     }}>
       {children}
@@ -224,7 +274,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             const target = e.target as HTMLAudioElement;
             setState(s => {
                 if(s.currentSong) {
-                    // Update duration
                     return { ...s, currentSong: { ...s.currentSong, duration: target.duration } };
                 }
                 return s;

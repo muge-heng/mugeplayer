@@ -10,6 +10,9 @@ export interface Song {
   isLiked?: boolean;
 }
 
+export type VisualMode = 'square' | 'vinyl' | 'immersive';
+export type NavView = 'home' | 'search' | 'library';
+
 export interface PlayerState {
   currentSong: Song | null;
   isPlaying: boolean;
@@ -19,7 +22,10 @@ export interface PlayerState {
   history: Song[];
   shuffle: boolean;
   repeat: 'off' | 'all' | 'one';
-  view: 'library' | 'lyrics';
+  view: 'library' | 'lyrics'; // 'view' controls the full screen player overlay
+  navView: NavView; // 'navView' controls the main content area
+  visualMode: VisualMode;
+  searchQuery: string;
 }
 
 export interface LyricLine {
