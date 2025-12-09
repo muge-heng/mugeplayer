@@ -31,12 +31,27 @@ export const parseLrc = (lrc: string): LyricLine[] => {
   return result;
 };
 
-// Fallback to treat plain text as lyrics without timestamps (display all at once or static)
+// Fallback to treat plain text as lyrics without timestamps
 export const isLrcFormat = (text: string): boolean => {
   return /\[\d{2}:\d{2}/.test(text);
 };
 
 export const generateId = () => Math.random().toString(36).substr(2, 9);
+
+export const getAudioDuration = (file: File): Promise<number> => {
+    return new Promise((resolve) => {
+        const objectUrl = URL.createObjectURL(file);
+        const audio = new Audio(objectUrl);
+        audio.onloadedmetadata = () => {
+            const duration = audio.duration;
+            URL.revokeObjectURL(objectUrl);
+            resolve(duration === Infinity || isNaN(duration) ? 0 : duration);
+        };
+        audio.onerror = () => {
+             resolve(0);
+        }
+    });
+};
 
 export const readMetadata = (file: File): Promise<{ title?: string; artist?: string; album?: string; coverUrl?: string }> => {
   return new Promise((resolve) => {

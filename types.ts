@@ -1,3 +1,4 @@
+
 export interface Song {
   id: string;
   title: string;
@@ -23,16 +24,30 @@ export interface Playlist {
 }
 
 export type Language = 'en' | 'zh';
+// Updated to include specific Aurora variations
+export type Theme = 'dark' | 'light' | 'violet' | 'aurora-dark' | 'aurora-light' | 'pink';
+
+export interface HyperSettings {
+    enableChromatic: boolean;
+    enableNoise: boolean;
+    enableGlow: boolean;
+}
 
 export interface AppSettings {
   language: Language;
+  theme: Theme;
   enableParticles: boolean;
-  enableHyperMode: boolean; // Avant-garde effects
+  enableHyperMode: boolean; // Master switch
+  hyperSettings: HyperSettings; // Granular settings
   highPerformanceMode: boolean;
   lyricEffect: 'standard' | 'blur' | 'glow' | 'kinetic';
+  showAdvancedPlayerControls: boolean;
+  smartShuffle: boolean; // New: Prioritize unplayed songs
+  lyricFontSize: number; // New: Font size in px (base)
+  lyricFontFamily: string; // New: Font family
 }
 
-export type VisualMode = 'square' | 'vinyl' | 'immersive' | 'particles' | 'hyper';
+export type VisualMode = 'square' | 'vinyl' | 'cassette' | 'immersive' | 'particles' | 'hyper';
 export type NavView = 'home' | 'search' | 'library' | 'playlist' | 'settings';
 export type SortOption = 'title' | 'artist' | 'dateAdded';
 
@@ -41,18 +56,21 @@ export interface PlayerState {
   isPlaying: boolean;
   volume: number;
   currentTime: number;
-  queue: Song[];
+  queue: Song[];   // The active playback list
+  library: Song[]; // The persistent database list
   history: Song[];
   playlists: Playlist[];
   shuffle: boolean;
   repeat: 'off' | 'all' | 'one';
   isPlayerOpen: boolean;
+  isQueueOpen: boolean;
   navView: NavView;
   activePlaylistId: string | null;
   visualMode: VisualMode;
   searchQuery: string;
   settings: AppSettings;
   sortOption: SortOption;
+  playedSongIds: Set<string>; // For Smart Shuffle
 }
 
 export interface LyricLine {
