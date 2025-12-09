@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useRef, useEffect } from 'react';
-import { Song, PlayerState, VisualMode, NavView } from '../types';
-import { readMetadata } from '../utils';
+import { Song, PlayerState, VisualMode, NavView, Playlist, AppSettings, SortOption, Language } from '../types';
+import { readMetadata, generateId } from '../utils';
+import { getSongsFromDB, saveSongToDB, updateSongInDB, initDB, getPlaylistsFromDB, savePlaylistToDB, deletePlaylistFromDB, deleteSongFromDB } from '../services/db';
 
 interface PlayerContextType extends PlayerState {
   audioRef: React.RefObject<HTMLAudioElement>;
@@ -16,11 +17,20 @@ interface PlayerContextType extends PlayerState {
   toggleLike: (id: string) => void;
   toggleShuffle: () => void;
   toggleRepeat: () => void;
-  setView: (view: 'library' | 'lyrics') => void;
+  setPlayerOpen: (isOpen: boolean) => void;
   setNavView: (view: NavView) => void;
+  setActivePlaylist: (id: string | null) => void;
   setVisualMode: (mode: VisualMode) => void;
   setSearchQuery: (query: string) => void;
+  setSortOption: (option: SortOption) => void;
   updateSongMetadata: (id: string, updates: Partial<Song>) => void;
+  createPlaylist: (name: string) => Promise<void>;
+  updatePlaylist: (id: string, updates: Partial<Playlist>) => Promise<void>;
+  addToPlaylist: (playlistId: string, songId: string) => Promise<void>;
+  removeFromPlaylist: (playlistId: string, songId: string) => Promise<void>;
+  deletePlaylist: (id: string) => Promise<void>;
+  deleteSong: (id: string) => Promise<void>;
+  updateSettings: (settings: Partial<AppSettings>) => void;
 }
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
@@ -33,14 +43,48 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     volume: 0.8,
     currentTime: 0,
     queue: [],
+    playlists: [],
     history: [],
     shuffle: false,
     repeat: 'off',
-    view: 'library',
+    isPlayerOpen: false,
     navView: 'library',
-    visualMode: 'square',
+    activePlaylistId: null,
+    visualMode: 'immersive',
     searchQuery: '',
+    sortOption: 'dateAdded',
+    settings: {
+        language: 'en',
+        enableParticles: true,
+        enableHyperMode: false,
+        highPerformanceMode: false,
+        lyricEffect: 'blur'
+    }
   });
+
+  // Initialize DB and load data
+  useEffect(() => {
+    const loadData = async () => {
+        try {
+            await initDB();
+            const [songs, playlists] = await Promise.all([getSongsFromDB(), getPlaylistsFromDB()]);
+            
+            // Load Settings from LocalStorage
+            const savedSettings = localStorage.getItem('museSettings');
+            const parsedSettings = savedSettings ? JSON.parse(savedSettings) : state.settings;
+
+            setState(prev => ({ 
+                ...prev, 
+                queue: songs,
+                playlists: playlists,
+                settings: parsedSettings
+            }));
+        } catch (e) {
+            console.error("Failed to load data", e);
+        }
+    };
+    loadData();
+  }, []);
 
   // Handle Audio Events
   useEffect(() => {
@@ -57,10 +101,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('ended', handleEnded);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.queue, state.repeat, state.shuffle]); 
 
-  // Play a specific song
+  // Derived sorted queue for display (though internal queue remains consistent for playback logic usually, 
+  // here we just modify how we access next/prev or display)
+  // For simplicity in this local player, we sort the main queue directly or sort on render.
+  // We'll expose a 'getSortedSongs' helper internally if needed, but here we just store the sort preference.
+
   const play = (song: Song) => {
     setState(prev => ({
       ...prev,
@@ -148,7 +195,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const audioFiles: File[] = [];
     const lrcFiles: File[] = [];
 
-    // Separate files
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (file.type.startsWith('audio/') || file.name.endsWith('.flac')) {
@@ -172,9 +218,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             title = parts.slice(1).join('-').trim();
         }
 
-        // Auto-match LRC
         let lyrics = undefined;
-        // 1. Check in newly uploaded LRCs
         const fileNameBase = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
         const matchedLrcFile = lrcFiles.find(l => {
             const lrcNameBase = l.name.substring(0, l.name.lastIndexOf('.')) || l.name;
@@ -185,26 +229,25 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             lyrics = await matchedLrcFile.text();
         }
 
-        newSongs.push({
-          id: Math.random().toString(36).substr(2, 9),
+        const song: Song = {
+          id: generateId(),
           title,
           artist,
           album: metadata.album || 'Local Import',
           duration: 0, 
           fileUrl: url,
+          fileBlob: file, 
           coverUrl: metadata.coverUrl,
-          lyrics: lyrics
-        });
+          lyrics: lyrics,
+          dateAdded: Date.now()
+        };
+
+        await saveSongToDB(song);
+        newSongs.push(song);
     }
 
     setState(prev => {
-        // Also check if any new LRCs match EXISTING songs in queue that don't have lyrics
-        const updatedQueue = [...prev.queue];
-        // Note: This logic for existing songs would require async operations inside set state which is tricky. 
-        // We'll simplisticly just handle new songs for now, or we would need a separate effect.
-        
-        const finalQueue = [...updatedQueue, ...newSongs];
-        
+        const finalQueue = [...prev.queue, ...newSongs];
         if (!prev.currentSong && newSongs.length > 0) {
             setTimeout(() => play(newSongs[0]), 100);
             return { ...prev, queue: finalQueue, currentSong: newSongs[0], isPlaying: true };
@@ -222,11 +265,100 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const toggleLike = (id: string) => {
+    const song = state.queue.find(s => s.id === id);
+    if (song) {
+        const updatedSong = { ...song, isLiked: !song.isLiked };
+        updateSongInDB(updatedSong);
+    }
+
     setState(prev => ({
       ...prev,
       queue: prev.queue.map(s => s.id === id ? { ...s, isLiked: !s.isLiked } : s),
       currentSong: prev.currentSong?.id === id ? { ...prev.currentSong, isLiked: !prev.currentSong.isLiked } : prev.currentSong
     }));
+  };
+
+  // --- Playlist Logic ---
+
+  const createPlaylist = async (name: string) => {
+      const newPlaylist: Playlist = {
+          id: generateId(),
+          name,
+          songs: [],
+          createdAt: Date.now(),
+          useFirstSongCover: true
+      };
+      await savePlaylistToDB(newPlaylist);
+      setState(prev => ({ ...prev, playlists: [...prev.playlists, newPlaylist] }));
+  };
+
+  const updatePlaylist = async (id: string, updates: Partial<Playlist>) => {
+      const playlist = state.playlists.find(p => p.id === id);
+      if (playlist) {
+          const updated = { ...playlist, ...updates };
+          await savePlaylistToDB(updated);
+          setState(prev => ({
+              ...prev,
+              playlists: prev.playlists.map(p => p.id === id ? updated : p)
+          }));
+      }
+  };
+
+  const addToPlaylist = async (playlistId: string, songId: string) => {
+      const playlist = state.playlists.find(p => p.id === playlistId);
+      if (playlist && !playlist.songs.includes(songId)) {
+          const updated = { ...playlist, songs: [...playlist.songs, songId] };
+          await savePlaylistToDB(updated);
+          setState(prev => ({
+              ...prev,
+              playlists: prev.playlists.map(p => p.id === playlistId ? updated : p)
+          }));
+      }
+  };
+
+  const removeFromPlaylist = async (playlistId: string, songId: string) => {
+      const playlist = state.playlists.find(p => p.id === playlistId);
+      if (playlist) {
+          const updated = { ...playlist, songs: playlist.songs.filter(id => id !== songId) };
+          await savePlaylistToDB(updated);
+          setState(prev => ({
+              ...prev,
+              playlists: prev.playlists.map(p => p.id === playlistId ? updated : p)
+          }));
+      }
+  };
+
+  const deletePlaylist = async (id: string) => {
+      await deletePlaylistFromDB(id);
+      setState(prev => ({
+          ...prev,
+          playlists: prev.playlists.filter(p => p.id !== id),
+          navView: prev.navView === 'playlist' && prev.activePlaylistId === id ? 'library' : prev.navView
+      }));
+  };
+
+  const deleteSong = async (id: string) => {
+      await deleteSongFromDB(id);
+      setState(prev => ({
+          ...prev,
+          queue: prev.queue.filter(s => s.id !== id),
+          playlists: prev.playlists.map(p => {
+              if (p.songs.includes(id)) {
+                  const updated = { ...p, songs: p.songs.filter(sid => sid !== id) };
+                  savePlaylistToDB(updated);
+                  return updated;
+              }
+              return p;
+          })
+      }));
+  };
+
+  const updateSettings = (settings: Partial<AppSettings>) => {
+      setState(prev => {
+          const newSettings = { ...prev.settings, ...settings };
+          localStorage.setItem('museSettings', JSON.stringify(newSettings));
+          return { ...prev, settings: newSettings };
+      });
   };
 
   const toggleShuffle = () => setState(s => ({ ...s, shuffle: !s.shuffle }));
@@ -238,6 +370,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const updateSongMetadata = (id: string, updates: Partial<Song>) => {
+     const songIndex = state.queue.findIndex(s => s.id === id);
+     if (songIndex !== -1) {
+         const updatedSong = { ...state.queue[songIndex], ...updates };
+         updateSongInDB(updatedSong);
+     }
+
      setState(prev => ({
          ...prev,
          queue: prev.queue.map(s => s.id === id ? { ...s, ...updates } : s),
@@ -261,11 +399,20 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       toggleLike,
       toggleShuffle,
       toggleRepeat,
-      setView: (view) => setState(s => ({...s, view})),
+      setPlayerOpen: (isOpen) => setState(s => ({...s, isPlayerOpen: isOpen})),
       setNavView: (navView) => setState(s => ({...s, navView})),
+      setActivePlaylist: (id) => setState(s => ({...s, activePlaylistId: id})),
       setVisualMode: (visualMode) => setState(s => ({...s, visualMode})),
       setSearchQuery: (searchQuery) => setState(s => ({...s, searchQuery})),
-      updateSongMetadata
+      setSortOption: (option) => setState(s => ({...s, sortOption: option})),
+      updateSongMetadata,
+      createPlaylist,
+      updatePlaylist,
+      addToPlaylist,
+      removeFromPlaylist,
+      deletePlaylist,
+      deleteSong,
+      updateSettings
     }}>
       {children}
       <audio 
@@ -273,8 +420,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         onLoadedMetadata={(e) => {
             const target = e.target as HTMLAudioElement;
             setState(s => {
-                if(s.currentSong) {
-                    return { ...s, currentSong: { ...s.currentSong, duration: target.duration } };
+                if(s.currentSong && s.currentSong.duration !== target.duration) {
+                    const updated = { ...s.currentSong, duration: target.duration };
+                    updateSongInDB(updated);
+                    return { ...s, currentSong: updated };
                 }
                 return s;
             })
