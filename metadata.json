@@ -1,0 +1,5 @@
+{
+  "name": "Muse.ai - Local Player",
+  "description": "A premium local music player featuring Apple Music-style synced lyrics, Spotify-inspired UI, and Gemini AI for intelligent metadata and lyrics generation.",
+  "requestFramePermissions": []
+}
